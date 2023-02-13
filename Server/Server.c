@@ -12,7 +12,6 @@ void cleanup(char* message);
 struct gameInfo {
 	BOOLEAN isConnected;
 	BOOLEAN isHangman;
-	char* word;
 	char* guessingWord;
 	int opponent;
 	int lives;
@@ -35,6 +34,7 @@ int main(int argc, char* argv[])
 	for (int i = 0; i < MAXCLIENTS; ++i) {
 		gamesInfo[i].isConnected = FALSE;
 		gamesInfo[i].lives = 10;
+		gamesInfo[i].guessingWord = NULL;
 	}
 
 	//if (argc != 2) {
@@ -73,7 +73,7 @@ int main(int argc, char* argv[])
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 	servaddr.sin_port = htons(port);
 
-	if (bind(l_socket, (struct sockadrr*)&servaddr, sizeof(servaddr)) < 0) {
+	if (bind(l_socket, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
 		cleanup("ERROR: cannot bind listening socket.");
 		return -1;
 	}
@@ -140,6 +140,8 @@ int main(int argc, char* argv[])
 							if (gamesInfo[i].isConnected == FALSE) {
 								snprintf(buffer, sizeof(buffer), "-You have connected to your friend. Please wait, while he Enters the starting word\n");
 								gamesInfo[i].opponent = j;
+								gamesInfo[j].isHangman = TRUE;
+								gamesInfo[i].isHangman = FALSE;
 								gamesInfo[j].opponent = i;
 								gamesInfo[i].isConnected = TRUE;
 								gamesInfo[j].isConnected = TRUE;
@@ -165,16 +167,87 @@ int main(int argc, char* argv[])
 							}
 						}
 						else if (gamesInfo[i].opponent == j) {
-							gamesInfo[i].guessingWord = malloc(sizeof(buffer));
-							gamesInfo[i].guessingWord = buffer;
-							gamesInfo[j].word = malloc(sizeof(char) * strlen(buffer));
-							memset(&gamesInfo[j].word, '.', strlen(buffer)-1);
-							
-							snprintf(buffer, sizeof(buffer), "Game started. Your word is: %s", &gamesInfo[j].word);
-							int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
-							if (w_len <= 0) {
-								closesocket(c_sockets[j]);
-								c_sockets[j] = -1;
+							if (gamesInfo[i].isHangman == TRUE) {
+								if (gamesInfo[i].guessingWord == NULL) {
+									int sz = 0;
+									for (; buffer[sz] != '\n'; sz++);
+									gamesInfo[i].guessingWord = (char*)malloc(sizeof(char) * sz);
+									strcpy(gamesInfo[i].guessingWord, buffer);
+									gamesInfo[j].guessingWord = (char*)malloc(sizeof(char) * (sz + 1));
+									memset(gamesInfo[j].guessingWord, '.', sz);
+									gamesInfo[j].guessingWord[sz] = '\0';
+									gamesInfo[i].guessingWord[sz] = '\0';
+									snprintf(buffer, sizeof(buffer), "Game started. Your word is: %s", gamesInfo[j].guessingWord);
+									int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
+									if (w_len <= 0) {
+										closesocket(c_sockets[j]);
+										c_sockets[j] = -1;
+									}
+								}
+							}
+							else {
+								BOOL rado = FALSE;
+								for (int k = 0; k < strlen(gamesInfo[j].guessingWord); ++k) {
+									if (buffer[0] == gamesInfo[j].guessingWord[k]) {
+										gamesInfo[i].guessingWord[k] = buffer[0];
+										rado = TRUE;
+									}
+								}
+								if (!rado) gamesInfo[i].lives--;
+								if (!gamesInfo[i].lives) {
+									snprintf(buffer, sizeof(buffer), "-You won!");
+									int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
+									closesocket(c_sockets[j]);
+									c_sockets[j] = -1;
+									snprintf(buffer, sizeof(buffer), "Oops, you lost. The word was: %s", gamesInfo[j].guessingWord);
+									w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
+									closesocket(c_sockets[i]);
+									c_sockets[j] = -1;
+									gamesInfo[i].guessingWord = NULL;
+									gamesInfo[i].isConnected = FALSE;
+									gamesInfo[i].isHangman = FALSE;
+									gamesInfo[i].lives = 10;
+									gamesInfo[i].opponent = -1;
+									gamesInfo[j].guessingWord = NULL;
+									gamesInfo[j].isConnected = FALSE;
+									gamesInfo[j].isHangman = FALSE;
+									gamesInfo[j].lives = 10;
+									gamesInfo[j].opponent = -1;
+									break;
+								}
+								if (!strcmp(gamesInfo[i].guessingWord, gamesInfo[j].guessingWord)) {
+									snprintf(buffer, sizeof(buffer), "-Oops, you lost. Your friend answered the word!", gamesInfo[j].guessingWord);
+									int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
+									closesocket(c_sockets[j]);
+									c_sockets[j] = -1;
+									snprintf(buffer, sizeof(buffer), "-Congratulations! you won! The word was: %s", gamesInfo[j].guessingWord);
+									w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
+									closesocket(c_sockets[i]);
+									c_sockets[i] = -1;
+									gamesInfo[i].guessingWord = NULL;
+									gamesInfo[i].isConnected = FALSE;
+									gamesInfo[i].isHangman = FALSE;
+									gamesInfo[i].lives = 10;
+									gamesInfo[i].opponent = -1;
+									gamesInfo[j].guessingWord = NULL;
+									gamesInfo[j].isConnected = FALSE;
+									gamesInfo[j].isHangman = FALSE;
+									gamesInfo[j].lives = 10;
+									gamesInfo[j].opponent = -1;
+									break;
+								}
+								snprintf(buffer, sizeof(buffer), "-Your friend guessed: %c and he has %d lives", buffer[0], gamesInfo[i].lives);
+								int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
+								if (w_len <= 0) {
+									closesocket(c_sockets[j]);
+									c_sockets[j] = -1;
+								}
+								snprintf(buffer, sizeof(buffer), "Your word now is: '%s' and you have %d lives!", gamesInfo[i].guessingWord, gamesInfo[i].lives);
+								w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
+								if (w_len <= 0) {
+									closesocket(c_sockets[i]);
+									c_sockets[i] = -1;
+								}
 							}
 						}
 					}
