@@ -66,3 +66,6 @@ dkms.conf
 *.log
 /Client/x64/Debug/_IsIncrementalBuild
 /Server/x64/Debug/_IsIncrementalBuild
+
+/Server/.vs/Server/v17/TestStore/0/000.testlog
+/Server/.vs/Server/v17/TestStore/0/testlog.manifest

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <io.h>
 #include <WS2tcpip.h>
 #include <winsock2.h>
 
@@ -77,9 +78,11 @@ int main(int argc, char* argv[])
 			i = recv(s_socket, &recvbuffer, BUFFLEN, 0);
 			printf("%s\n", recvbuffer);
 		}
-		else if (FD_ISSET(0, &read_set)) {
-			i = read(0, &sendbuffer, 1);
-			send(s_socket, sendbuffer, i, NULL);
+		if (recvbuffer[0] != '-') {
+			printf("Enter the message: ");
+			fgets(sendbuffer, BUFFLEN, stdin);
+			send(s_socket, sendbuffer, strlen(sendbuffer), 0);
+			memset(&sendbuffer, 0, BUFFLEN);
 		}
 	}
 }
