@@ -4,97 +4,71 @@
 
 #define BUFFLEN 1024
 #define MAXCLIENTS 10
+#define USERLIVES 10
+
 #pragma comment(lib, "Ws2_32.lib")
 
-int findemptyuser(int c_sockets[]);
-void cleanup(char* message);
-
-struct gameInfo {
+typedef struct GameInfo {
 	BOOLEAN isConnected;
 	BOOLEAN isHangman;
 	char* guessingWord;
 	int opponent;
 	int lives;
-};
+} GameInfo;
+
+WSADATA Data;
+GameInfo gamesInfo[MAXCLIENTS];
+fd_set read_set;
+SOCKET l_socket = INVALID_SOCKET;
+SOCKET c_sockets[MAXCLIENTS];
+struct sockaddr_in servaddr;
+struct sockaddr_in clientaddr;
+char buffer[BUFFLEN];
+unsigned int port = 12345;
+unsigned int clientaddrlen;
+
+void tryWSAStartup();
+void validatePort();
+void createSocket(int af, int type, int protocol);
+void fillServerAddress(u_long sin_addr, u_short sin_port);
+void bindSocket();
+void listenSocket();
+SOCKET findemptyuser(SOCKET c_sockets[]);
+void setGameInfo(int index, char* guessingWord, BOOLEAN isConnected, BOOLEAN isHangman, int opponent);
+void sendMessage(SOCKET socket, int flags);
+void cleanup(char* message);
 
 int main(int argc, char* argv[])
 {
 	printf("Starting up the server...\n");
-	WSADATA Data;
-	int WSAStartupErrorType = WSAStartup(MAKEWORD(2, 2), &Data);
-	if (WSAStartupErrorType) {
-		cleanup("ERROR: WSAStartup failed with error: %d\n", WSAGetLastError());
-		return -1;
-	}
-
-	printf("Server is in: %s\n", argv[0]);
-
-	struct gameInfo gamesInfo[MAXCLIENTS];
+	tryWSAStartup();
 
 	for (int i = 0; i < MAXCLIENTS; ++i) {
-		gamesInfo[i].isConnected = FALSE;
-		gamesInfo[i].lives = 10;
-		gamesInfo[i].guessingWord = NULL;
+		setGameInfo(i, NULL, FALSE, FALSE, -1);
 	}
 
 	//if (argc != 2) {
 	//	printf("ERROR: expected 2 arguments, got: %d", argc);
 	//	return -1;
 	//}
-	unsigned int port = 12345;
-	unsigned int clientaddrlen;
-	int l_socket;
-	int c_sockets[MAXCLIENTS];
-	fd_set read_set;
-
-	struct sockaddr_in servaddr;
-	struct sockaddr_in clientaddr;
-
-	int maxfd = 0;
-
-	char buffer[BUFFLEN];
 
 	//port = atoi(argv[1]);
-	if (port < 1 || port > 65535) {
-		cleanup("ERROR: invalid port specified. Expected number in (1, 65535).");
-		return -1;
-	}
-	printf("Port is %i\n", port);
-
-	if ((l_socket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
-		cleanup("ERROR: cannot create listening socket.");
-		return -1;
-	}
-
-	printf("Created socket successfully.\n");
-
-	memset(&servaddr, 0, sizeof(servaddr));
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	servaddr.sin_port = htons(port);
-
-	if (bind(l_socket, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
-		cleanup("ERROR: cannot bind listening socket.");
-		return -1;
-	}
-
-	printf("Binded socket successfully.\n");
-
-	if (listen(l_socket, 5) < 0) {
-		cleanup("ERROR: cannot listen on socket.");
-		return -1;
-	}
-
-	printf("Listening on socket successfully.\n");
+	validatePort();
+	createSocket(AF_INET, SOCK_STREAM, 0);
+	fillServerAddress(htonl(INADDR_ANY), htons(port));
+	bindSocket();
+	listenSocket();
 
 	for (int i = 0; i < MAXCLIENTS; ++i) {
 		c_sockets[i] = -1;
 	}
 
+	SOCKET maxfd = 0;
+
 	while (1) {
 		FD_ZERO(&read_set);
 		for (int i = 0; i < MAXCLIENTS; ++i) {
-			if (c_sockets[i] != -1) {
+			if (c_sockets[i] != INVALID_SOCKET) {
 				FD_SET(c_sockets[i], &read_set);
 				if (c_sockets[i] > maxfd) {
 					maxfd = c_sockets[i];
@@ -107,63 +81,43 @@ int main(int argc, char* argv[])
 			maxfd = l_socket;
 		}
 
-		select(maxfd + 1, &read_set, NULL, NULL, NULL);
+		select((SOCKET)(maxfd + 1), &read_set, NULL, NULL, NULL);
 
 		if (FD_ISSET(l_socket, &read_set)) {
-			int client_id = findemptyuser(c_sockets);
-			if (client_id != -1) {
+			SOCKET client_id = findemptyuser(c_sockets);
+			if (client_id != INVALID_SOCKET) {
 				clientaddrlen = sizeof(clientaddr);
 				memset(&clientaddr, 0, clientaddrlen);
 				c_sockets[client_id] = accept(l_socket, (struct sockaddr*)&clientaddr, &clientaddrlen);
-				printf("Client %d connected from %s:%d\n", client_id, inet_ntop(AF_INET, &clientaddr, buffer, BUFFLEN), ntohs(clientaddr.sin_port));
-				snprintf(buffer, sizeof(buffer), "Hello, you are connected. Your Id is: %d.\nIvesk savo oponento id, arba -1, jeigu tu jo lauki", client_id);
-				send(c_sockets[client_id], buffer, sizeof(buffer), 0);
+				printf("Client %llu connected from %s:%d\n", client_id, inet_ntop(AF_INET, &clientaddr, buffer, BUFFLEN), ntohs(clientaddr.sin_port));
+				snprintf(buffer, sizeof(buffer), "Hello, you are connected. Your Id is: %llu.\nIvesk savo oponento id, arba -1, jeigu tu jo lauki", client_id);
+				sendMessage(c_sockets[client_id], 0);
 			}
 		}
 
 		for (int i = 0; i < MAXCLIENTS; ++i) {
-			if (c_sockets[i] != -1) {
+			if (c_sockets[i] != INVALID_SOCKET) {
 				if (FD_ISSET(c_sockets[i], &read_set)) {
 					memset(&buffer, 0, BUFFLEN);
-					int r_len = recv(c_sockets[i], &buffer, BUFFLEN, 0);
+					int r_len = recv(c_sockets[i], buffer, BUFFLEN, 0);
 					if (!strcmp("-1\n", buffer)) {
 						snprintf(buffer, sizeof(buffer), "-Waiting for your friend...");
-						int w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
-						if (w_len <= 0) {
-							closesocket(c_sockets[i]);
-							c_sockets[i] = -1;
-						}
+						sendMessage(c_sockets[i], 0);
 						break;
 					}
 					for (int j = 0; j < MAXCLIENTS; ++j) {
 						if ((isdigit(buffer[0]) || isdigit(1)) && atoi(buffer) == j) {
 							if (gamesInfo[i].isConnected == FALSE) {
 								snprintf(buffer, sizeof(buffer), "-You have connected to your friend. Please wait, while he Enters the starting word\n");
-								gamesInfo[i].opponent = j;
-								gamesInfo[j].isHangman = TRUE;
-								gamesInfo[i].isHangman = FALSE;
-								gamesInfo[j].opponent = i;
-								gamesInfo[i].isConnected = TRUE;
-								gamesInfo[j].isConnected = TRUE;
-								int w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
-								if (w_len <= 0) {
-									closesocket(c_sockets[i]);
-									c_sockets[i] = -1;
-								}
+								setGameInfo(i, NULL, TRUE, TRUE, j);
+								setGameInfo(j, NULL, TRUE, FALSE, i);
+								sendMessage(c_sockets[i], 0);
 								snprintf(buffer, sizeof(buffer), "Your friend is connected. You can start playing. Enter the starting word please:");
-								w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
-								if (w_len <= 0) {
-									closesocket(c_sockets[j]);
-									c_sockets[j] = -1;
-								}
+								sendMessage(c_sockets[j], 0);
 							}
 							else {
 								snprintf(buffer, sizeof(buffer), "Opps, your friend is allready playing with someone.\n");
-								int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
-								if (w_len <= 0) {
-									closesocket(c_sockets[j]);
-									c_sockets[j] = -1;
-								}
+								sendMessage(c_sockets[j], 0);
 							}
 						}
 						else if (gamesInfo[i].opponent == j) {
@@ -178,11 +132,6 @@ int main(int argc, char* argv[])
 									gamesInfo[j].guessingWord[sz] = '\0';
 									gamesInfo[i].guessingWord[sz] = '\0';
 									snprintf(buffer, sizeof(buffer), "Game started. Your word is: %s", gamesInfo[j].guessingWord);
-									int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
-									if (w_len <= 0) {
-										closesocket(c_sockets[j]);
-										c_sockets[j] = -1;
-									}
 								}
 							}
 							else {
@@ -216,7 +165,7 @@ int main(int argc, char* argv[])
 									break;
 								}
 								if (!strcmp(gamesInfo[i].guessingWord, gamesInfo[j].guessingWord)) {
-									snprintf(buffer, sizeof(buffer), "-Oops, you lost. Your friend answered the word!", gamesInfo[j].guessingWord);
+									snprintf(buffer, sizeof(buffer), "-Oops, you lost. Your friend answered the word!");
 									int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
 									closesocket(c_sockets[j]);
 									c_sockets[j] = -1;
@@ -259,7 +208,57 @@ int main(int argc, char* argv[])
 	return 0;
 }
 
-int findemptyuser(int c_sockets[]) {
+void tryWSAStartup() {
+	/*
+	* If we wan't to use Winsock DLL, we need to initiate it.
+	*/
+	int WSAStartupErrorType = WSAStartup(MAKEWORD(2, 2), &Data);
+	if (WSAStartupErrorType) {
+		cleanup("ERROR: WSAStartup failed\n");
+	}
+}
+
+void validatePort() {
+	if (port < 1 || port > 65535) {
+		cleanup("ERROR: invalid port specified. Expected number in (1, 65535).");
+	}
+	printf("Port is %i\n", port);
+}
+
+/*
+* af - address family (we should use IPv4)
+* SOCK_STREAM - Socket type (We should use Transmission Control Protocol)
+* protocol - the protocol to be used (we should set it to 0)
+*/
+void createSocket(int af, int type, int protocol) {
+	if ((l_socket = socket(af, type, protocol)) == INVALID_SOCKET) {
+		cleanup("ERROR: cannot create listening socket.");
+	}
+	printf("Created socket successfully.\n");
+}
+
+void fillServerAddress(u_long sin_addr, u_short sin_port) {
+	memset(&servaddr, 0, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = sin_addr;
+	servaddr.sin_port = sin_port;
+}
+
+void bindSocket() {
+	if (bind(l_socket, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
+		cleanup("ERROR: cannot bind listening socket.");
+	}
+	printf("Binded socket successfully.\n");
+}
+
+void listenSocket() {
+	if (listen(l_socket, 10) < 0) {
+		cleanup("ERROR: cannot listen on socket.");
+	}
+	printf("Listening on socket successfully.\n");
+}
+
+SOCKET findemptyuser(SOCKET c_sockets[]) {
 	for (int i = 0; i < MAXCLIENTS; i++) {
 		if (c_sockets[i] == -1) {
 			return i;
@@ -268,7 +267,33 @@ int findemptyuser(int c_sockets[]) {
 	return -1;
 }
 
+void setGameInfo(int index, char* guessingWord, BOOLEAN isConnected, BOOLEAN isHangman, int opponent) {
+	if (gamesInfo[index].guessingWord == NULL) {
+		if (guessingWord == NULL)
+			gamesInfo[index].guessingWord = NULL;
+		else {
+			memset(&gamesInfo[index].guessingWord, strlen(guessingWord), sizeof(char));
+			strcpy(gamesInfo[index].guessingWord, guessingWord);
+		}
+	}
+	else
+		strcpy(gamesInfo[index].guessingWord, guessingWord);
+	gamesInfo[index].isConnected = isConnected;
+	gamesInfo[index].isHangman = isHangman;
+	gamesInfo[index].lives = USERLIVES;
+	gamesInfo[index].opponent = opponent;
+}
+
+void sendMessage(SOCKET socket, int flags) {
+	int w_len = send(socket, buffer, sizeof(buffer), flags);
+	if (w_len <= 0) {
+		closesocket(socket);
+		socket = INVALID_SOCKET;
+	}
+}
+
 void cleanup(char* message) {
 	printf("%s\n", message);
 	WSACleanup();
+	exit(-1);
 }
