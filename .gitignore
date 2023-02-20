@@ -69,3 +69,4 @@ dkms.conf
 
 /Server/.vs/Server/v17/TestStore/0/000.testlog
 /Server/.vs/Server/v17/TestStore/0/testlog.manifest
+/Server/x64/Debug/server.obj.enc
