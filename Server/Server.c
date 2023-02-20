@@ -11,6 +11,7 @@
 typedef struct GameInfo {
 	BOOLEAN isConnected;
 	BOOLEAN isHangman;
+	BOOLEAN isWaiting;
 	char* guessingWord;
 	int opponent;
 	int lives;
@@ -34,7 +35,7 @@ void fillServerAddress(u_long sin_addr, u_short sin_port);
 void bindSocket();
 void listenSocket();
 SOCKET findemptyuser();
-void setGameInfo(int index, char* guessingWord, BOOLEAN isConnected, BOOLEAN isHangman, int opponent);
+void setGameInfo(int index, char* guessingWord, BOOLEAN isConnected, BOOLEAN isHangman, BOOLEAN isWaiting, int opponent);
 void sendMessage(SOCKET socket, int flags);
 void cleanup(char* message);
 
@@ -44,7 +45,7 @@ int main(int argc, char* argv[])
 	tryWSAStartup();
 
 	for (int i = 0; i < MAXCLIENTS; ++i) {
-		setGameInfo(i, NULL, FALSE, FALSE, -1);
+		setGameInfo(i, NULL, FALSE, FALSE, FALSE, -1);
 	}
 
 	//if (argc != 2) {
@@ -64,8 +65,9 @@ int main(int argc, char* argv[])
 	}
 
 	SOCKET maxfd;
-
+	BOOLEAN correctRequest;
 	while (1) {
+		correctRequest = FALSE;
 		maxfd = 0;
 		FD_ZERO(&read_set);
 		for (int i = 0; i < MAXCLIENTS; ++i) {
@@ -93,9 +95,10 @@ int main(int argc, char* argv[])
 				printf("Client %llu connected from %s:%d\n", client_id, inet_ntop(AF_INET, &clientaddr, buffer, BUFFLEN), ntohs(clientaddr.sin_port));
 				snprintf(buffer, sizeof(buffer), "Welcome :). Your ID is: %llu.\nEnter your opponent ID or -1, if you are waiting for him.", client_id);
 				sendMessage(c_sockets[client_id], 0);
+				setGameInfo(client_id, NULL, TRUE, FALSE, FALSE, -1);
+				correctRequest = TRUE;
 			}
 		}
-
 		for (int i = 0; i < MAXCLIENTS; ++i) {
 			if (c_sockets[i] != INVALID_SOCKET) {
 				if (FD_ISSET(c_sockets[i], &read_set)) {
@@ -105,43 +108,51 @@ int main(int argc, char* argv[])
 						printf("Error while receiving data from client: %d. Client Id: %d. disconnecting him...\n", WSAGetLastError(), i);
 						closesocket(c_sockets[i]);
 						c_sockets[i] = INVALID_SOCKET;
+						setGameInfo(i, NULL, FALSE, FALSE, FALSE, -1);
 						break;
 					}
 					if (gamesInfo[i].opponent == -1 && buffer[0] == i + 48) {
 						printf("Client with id: %d called himself. Disconnecting him...\n", i);
 						closesocket(c_sockets[i]);
 						c_sockets[i] = INVALID_SOCKET;
+						setGameInfo(i, NULL, FALSE, FALSE, FALSE, -1);
 						break;
 					}
 					if (buffer[0] == -52) {
 						printf("Client with id: %d returned null, disconnecting him...\n", i);
 						closesocket(c_sockets[i]);
 						c_sockets[i] = INVALID_SOCKET;
+						setGameInfo(i, NULL, FALSE, FALSE, FALSE, -1);
 						if (gamesInfo[i].opponent != -1) {
 							closesocket(c_sockets[gamesInfo[i].opponent]);
 							c_sockets[gamesInfo[i].opponent] = INVALID_SOCKET;
+							setGameInfo(gamesInfo[i].opponent, NULL, FALSE, FALSE, FALSE, -1);
 						}
 						break;
 					}
 					if (gamesInfo[i].opponent == -1 && !strcmp("-1\n", buffer)) {
 						snprintf(buffer, sizeof(buffer), "-Waiting for your friend...");
 						sendMessage(c_sockets[i], 0);
+						setGameInfo(i, NULL, TRUE, FALSE, TRUE, -1);
+						correctRequest = TRUE;
 						break;
 					}
 					for (int j = 0; j < MAXCLIENTS; ++j) {
-						if ((isdigit(buffer[0]) || isdigit(1)) && atoi(buffer) == j) {
-							if (gamesInfo[i].isConnected == FALSE) {
+						if ((isdigit(buffer[0]) || isdigit(1)) && atoi(buffer) == j && gamesInfo[i].opponent == -1) {
+							if (gamesInfo[j].isConnected == TRUE && gamesInfo[j].opponent == -1 && gamesInfo[j].isWaiting == TRUE) {
+								setGameInfo(i, NULL, TRUE, FALSE, FALSE, j);
+								setGameInfo(j, NULL, TRUE, TRUE, FALSE, i);
 								snprintf(buffer, sizeof(buffer), "-You have connected to your friend. Please wait, while he Enters the starting word\n");
-								setGameInfo(i, NULL, TRUE, FALSE, j);
-								setGameInfo(j, NULL, TRUE, TRUE, i);
 								sendMessage(c_sockets[i], 0);
 								snprintf(buffer, sizeof(buffer), "Your friend is connected. You can start playing. Enter the starting word please:");
 								sendMessage(c_sockets[j], 0);
+								correctRequest = TRUE;
 								break;
 							}
 							else {
-								snprintf(buffer, sizeof(buffer), "Opps, your friend is allready playing with someone.\n");
-								sendMessage(c_sockets[j], 0);
+								snprintf(buffer, sizeof(buffer), "Opps, your friend is allready playing with someone or he is not connected.\n");
+								sendMessage(c_sockets[i], 0);
+								correctRequest = TRUE;
 								break;
 							}
 						}
@@ -158,59 +169,71 @@ int main(int argc, char* argv[])
 									gamesInfo[i].guessingWord[sz] = '\0';
 									snprintf(buffer, sizeof(buffer), "Game started. Your word is: %s", gamesInfo[j].guessingWord);
 									sendMessage(c_sockets[j], 0);
+									correctRequest = TRUE;
 									break;
 								}
 							}
 							else {
 								BOOL rado = FALSE;
 								for (int k = 0; k < strlen(gamesInfo[j].guessingWord); ++k) {
-									if (buffer[0] == gamesInfo[j].guessingWord[k]) {
+									if (buffer[0] == gamesInfo[j].guessingWord[k] && gamesInfo[i].guessingWord[k] == '.') {
 										gamesInfo[i].guessingWord[k] = buffer[0];
 										rado = TRUE;
 									}
 								}
 								if (!rado) gamesInfo[i].lives--;
 								if (!gamesInfo[i].lives) {
-									snprintf(buffer, sizeof(buffer), "-You won! The game has ended, I am disconnecting you now.\n");
-									int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
-									snprintf(buffer, sizeof(buffer), "Oops, you lost.The word was: %s. The game has ended, I am disconnecting you now.\n", gamesInfo[j].guessingWord);
-									w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
+									snprintf(buffer, sizeof(buffer), "!You won! The game has ended, I am disconnecting you now.\n");
+									sendMessage(c_sockets[j], 0);
+									snprintf(buffer, sizeof(buffer), "!Oops, you lost.The word was: %s. The game has ended, I am disconnecting you now.\n", gamesInfo[j].guessingWord);
+									sendMessage(c_sockets[i], 0);
 									closesocket(c_sockets[i]);
+									printf("Disconnected cliend %d", i);
 									closesocket(c_sockets[j]);
+									printf("Disconnected cliend %d", j);
 									c_sockets[i] = INVALID_SOCKET;
 									c_sockets[j] = INVALID_SOCKET;
-									setGameInfo(i, NULL, FALSE, FALSE, -1);
-									setGameInfo(j, NULL, FALSE, FALSE, -1);
+									setGameInfo(i, NULL, FALSE, FALSE, FALSE, -1);
+									setGameInfo(j, NULL, FALSE, FALSE, FALSE, -1);
+									correctRequest = TRUE;
 									break;
 								}
 								if (!strcmp(gamesInfo[i].guessingWord, gamesInfo[j].guessingWord)) {
-									snprintf(buffer, sizeof(buffer), "-Oops, you lost. Your friend answered the word!. The game has ended, I am disconnecting you now.\n");
-									int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
-									snprintf(buffer, sizeof(buffer), "-Congratulations! you won! The word was: %s. The game has ended, I am disconnecting you now.\n", gamesInfo[j].guessingWord);
-									w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
+									snprintf(buffer, sizeof(buffer), "!Oops, you lost. Your friend answered the word!. The game has ended, I am disconnecting you now.\n");
+									sendMessage(c_sockets[j], 0);
+									snprintf(buffer, sizeof(buffer), "!Congratulations! you won! The word was: %s. The game has ended, I am disconnecting you now.\n", gamesInfo[j].guessingWord);
+									sendMessage(c_sockets[i], 0);
 									closesocket(c_sockets[i]);
+									printf("Disconnected cliend %d\n", i);
 									closesocket(c_sockets[j]);
+									printf("Disconnected cliend %d\n", j);
 									c_sockets[i] = INVALID_SOCKET;
 									c_sockets[j] = INVALID_SOCKET;
-									setGameInfo(i, NULL, FALSE, FALSE, -1);
-									setGameInfo(j, NULL, FALSE, FALSE, -1);
+									setGameInfo(i, NULL, FALSE, FALSE, FALSE, -1);
+									setGameInfo(j, NULL, FALSE, FALSE, FALSE, -1);
+									correctRequest = TRUE;
 									break;
 								}
 								snprintf(buffer, sizeof(buffer), "-Your friend guessed: %c and he has %d lives", buffer[0], gamesInfo[i].lives);
-								int w_len = send(c_sockets[j], buffer, sizeof(buffer), 0);
-								if (w_len <= 0) {
-									closesocket(c_sockets[j]);
-									c_sockets[j] = INVALID_SOCKET;
-								}
+								sendMessage(c_sockets[j], 0);
 								snprintf(buffer, sizeof(buffer), "Your word now is: '%s' and you have %d lives!", gamesInfo[i].guessingWord, gamesInfo[i].lives);
-								w_len = send(c_sockets[i], buffer, sizeof(buffer), 0);
-								if (w_len <= 0) {
-									closesocket(c_sockets[i]);
-									c_sockets[i] = INVALID_SOCKET;
-								}
+								sendMessage(c_sockets[i], 0);
+								correctRequest = TRUE;
+								break;
 							}
 						}
 					}
+				}
+			}
+		}
+
+		if (correctRequest == FALSE) {
+			sendMessage(maxfd, "!Bad request!");
+			for (int i = 0; i < MAXCLIENTS; ++i) {
+				if (maxfd == c_sockets[i]) {
+					closesocket(c_sockets[i]);
+					c_sockets[i] = INVALID_SOCKET;
+					printf("Disconnecting client with id: %d", i);
 				}
 			}
 		}
@@ -278,7 +301,7 @@ SOCKET findemptyuser() {
 	return -1;
 }
 
-void setGameInfo(int index, char* guessingWord, BOOLEAN isConnected, BOOLEAN isHangman, int opponent) {
+void setGameInfo(int index, char* guessingWord, BOOLEAN isConnected, BOOLEAN isHangman, BOOLEAN isWaiting, int opponent) {
 	if (gamesInfo[index].guessingWord == NULL) {
 		if (guessingWord == NULL)
 			gamesInfo[index].guessingWord = NULL;
@@ -294,6 +317,7 @@ void setGameInfo(int index, char* guessingWord, BOOLEAN isConnected, BOOLEAN isH
 			strcpy(gamesInfo[index].guessingWord, guessingWord);
 	gamesInfo[index].isConnected = isConnected;
 	gamesInfo[index].isHangman = isHangman;
+	gamesInfo[index].isWaiting = isWaiting;
 	gamesInfo[index].lives = USERLIVES;
 	gamesInfo[index].opponent = opponent;
 }

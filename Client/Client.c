@@ -27,6 +27,8 @@ int main(int argc, char* argv[])
 		return -1;
 	}
 
+connection_start:
+
 	printf("Client is in: %s\n", argv[0]);
 
 	//if (argc != 3) {
@@ -78,8 +80,13 @@ int main(int argc, char* argv[])
 			i = recv(s_socket, &recvbuffer, BUFFLEN, 0);
 			printf("%s\n", recvbuffer);
 		}
+		if (recvbuffer[0] == '!') {
+			printf("Do you want to connect to the server again? (y/n)");
+			fgets(sendbuffer, BUFFLEN, stdin);
+			if (sendbuffer[0] == 'y')  goto connection_start;
+			else exit(0);
+		}
 		if (recvbuffer[0] != '-') {
-			printf("Enter the message: ");
 			fgets(sendbuffer, BUFFLEN, stdin);
 			send(s_socket, sendbuffer, strlen(sendbuffer), 0);
 			memset(&sendbuffer, 0, BUFFLEN);
